@@ -22,6 +22,7 @@
 #include <linux/types.h>
 #include <linux/delay.h>
 #include <linux/platform_device.h>
+#include <linux/gpio.h>
 
 #define MDIO_READ 2
 #define MDIO_WRITE 1
@@ -34,6 +35,15 @@
 #define MDIO_SETUP_TIME 10
 #define MDIO_HOLD_TIME 10
 
+#define GPIO1 17
+#define GPIO2 27
+#define GPIO3 23
+#define GPIO4 24
+#define GPIO5 2
+#define GPIO6 3
+#define GPIO_MDA GPIO5
+#define GPIO_MDC GPIO6
+
 /* Minimum MDC period is 400 ns, plus some margin for error.  MDIO_DELAY
  * is done twice per period.
  */
@@ -42,68 +52,88 @@
 /* The PHY may take up to 300 ns to produce data, plus some margin
  * for error.
  */
-#define MDIO_READ_DELAY 350
+#define MDIO_READ_DELAY 300
 
 static struct platform_device *platform_device;
 
-/* MDIO must already be configured as output. */
-static void mdiobb_send_bit(struct mdiobb_ctrl *ctrl, int val)
+/*------- GPIO Functions ------*/
+static void setmdc(int val)
 {
-	const struct mdiobb_ops *ops = ctrl->ops;
+	gpio_set_value(GPIO_MDC, val);
+}
 
-	ops->set_mdio_data(ctrl, val);
+static void setmda(int val)
+{
+	gpio_set_value(GPIO_MDA, val);
+}
+
+static int getmdc(void)
+{
+	int ret;
+	ret = gpio_get_value(GPIO_MDC);
+	return ret;
+}
+
+static int getmda(void)
+{
+	int ret;
+	ret = gpio_get_value(GPIO_MDA);
+	return ret;
+}
+
+
+/* MDIO must already be configured as output. */
+static void mdiobb_send_bit(int val)
+{
+	setmda(val);
 	ndelay(MDIO_DELAY);
-	ops->set_mdc(ctrl, 1);
+	setmdc(1);
 	ndelay(MDIO_DELAY);
-	ops->set_mdc(ctrl, 0);
+	setmdc(0);
 }
 
 /* MDIO must already be configured as input. */
-static int mdiobb_get_bit(struct mdiobb_ctrl *ctrl)
+static int mdiobb_get_bit(void)
 {
-	const struct mdiobb_ops *ops = ctrl->ops;
-
 	ndelay(MDIO_DELAY);
-	ops->set_mdc(ctrl, 1);
+	setmdc(1);
 	ndelay(MDIO_READ_DELAY);
-	ops->set_mdc(ctrl, 0);
+	setmdc(0);
 
-	return ops->get_mdio_data(ctrl);
+	return getmda();
 }
 
 /* MDIO must already be configured as output. */
-static void mdiobb_send_num(struct mdiobb_ctrl *ctrl, u16 val, int bits)
+static void mdiobb_send_num(u16 val, int bits)
 {
 	int i;
 
 	for (i = bits - 1; i >= 0; i--)
-		mdiobb_send_bit(ctrl, (val >> i) & 1);
+		mdiobb_send_bit((val >> i) & 1);
 }
 
 /* MDIO must already be configured as input. */
-static u16 mdiobb_get_num(struct mdiobb_ctrl *ctrl, int bits)
+static u16 mdiobb_get_num(int bits)
 {
 	int i;
 	u16 ret = 0;
 
 	for (i = bits - 1; i >= 0; i--) {
 		ret <<= 1;
-		ret |= mdiobb_get_bit(ctrl);
+		ret |= mdiobb_get_bit();
 	}
 
 	return ret;
 }
 
-/* Utility to send the preamble, PHYess, and
+/* Utility to send the preamble, address, and
  * register (common to read and write).
  */
-static void mdiobb_cmd(struct mdiobb_ctrl *ctrl, int op, u8 PHY, u8 reg)
+static void mdiobb_cmd(int op, u8 PHY, u8 reg)
 {
-	const struct mdiobb_ops *ops = ctrl->ops;
 	int i;
 
-	ops->set_mdio_dir(ctrl, 1);
-
+	gpio_direction_output(GPIO_MDA, 1);	
 	/*
 	 * Send a 32 bit preamble ('1's) with an extra '1' bit for good
 	 * measure.  The IEEE spec says this is a PHY optional
@@ -114,138 +144,104 @@ static void mdiobb_cmd(struct mdiobb_ctrl *ctrl, int op, u8 PHY, u8 reg)
 	 */
 
 	for (i = 0; i < 32; i++)
-		mdiobb_send_bit(ctrl, 1);
+		mdiobb_send_bit(1);
 
 	/* send the start bit (01) and the read opcode (10) or write (10).
 	   Clause 45 operation uses 00 for the start and 11, 10 for
 	   read/write */
-	mdiobb_send_bit(ctrl, 0);
+	mdiobb_send_bit(0);
 	if (op & MDIO_C45)
-		mdiobb_send_bit(ctrl, 0);
+		mdiobb_send_bit(0);
 	else
-		mdiobb_send_bit(ctrl, 1);
-	mdiobb_send_bit(ctrl, (op >> 1) & 1);
-	mdiobb_send_bit(ctrl, (op >> 0) & 1);
+		mdiobb_send_bit(1);
+	mdiobb_send_bit((op >> 1) & 1);
+	mdiobb_send_bit((op >> 0) & 1);
 
-	mdiobb_send_num(ctrl, PHY, 5);
-	mdiobb_send_num(ctrl, reg, 5);
+	mdiobb_send_num(PHY, 5);
+	mdiobb_send_num(reg, 5);
 }
 
 /* In clause 45 mode all commands are prefixed by MDIO_ADDR to specify the
-   lower 16 bits of the 21 bit PHYess. This transfer is done identically to a
+   lower 16 bits of the 21 bit address. This transfer is done identically to a
    MDIO_WRITE except for a different code. To enable clause 45 mode or
-   MII_ADDR_C45 into the PHYess. Theoretically clause 45 and normal devices
+   MII_ADDR_C45 into the address. Theoretically clause 45 and normal devices
    can exist on the same bus. Normal devices should ignore the MDIO_ADDR
    phase. */
-static int mdiobb_cmd_addr(struct mdiobb_ctrl *ctrl, int phy, u32 addr)
+static int mdiobb_cmd_addr(int phy, u32 addr)
 {
 	unsigned int dev_addr = (addr >> 16) & 0x1F;
 	unsigned int reg = addr & 0xFFFF;
-	mdiobb_cmd(ctrl, MDIO_C45_ADDR, addr, dev_addr);
+	mdiobb_cmd(MDIO_C45_ADDR, phy, dev_addr);
 
 	/* send the turnaround (10) */
-	mdiobb_send_bit(ctrl, 1);
-	mdiobb_send_bit(ctrl, 0);
+	mdiobb_send_bit(1);
+	mdiobb_send_bit(0);
 
-	mdiobb_send_num(ctrl, reg, 16);
+	mdiobb_send_num(reg, 16);
 
-	ctrl->ops->set_mdio_dir(ctrl, 0);
-	mdiobb_get_bit(ctrl);
+//gpio_direction_input(GPIO_MDA);
+
+
+//mdiobb_get_bit();
+
 
 	return dev_addr;
 }
 
-static int mdiobb_read(struct mii_bus *bus, int phy, int reg)
+static int mdiobb_read(int phy, int reg)
 {
-	struct mdiobb_ctrl *ctrl = bus->priv;
 	int ret, i;
-
+	
 	if (reg & MII_ADDR_C45) {
-		reg = mdiobb_cmd_addr(ctrl, phy, reg);
-		mdiobb_cmd(ctrl, MDIO_C45_READ, phy, reg);
+		reg = mdiobb_cmd_addr(phy, reg);
+		mdiobb_cmd(MDIO_C45_READ, phy, reg);
 	} else
-		mdiobb_cmd(ctrl, MDIO_READ, phy, reg);
+		mdiobb_cmd(MDIO_READ, phy, reg);
+/*
+	mdiobb_send_bit(1);
+	mdiobb_send_bit(0);
+*/
 
-	ctrl->ops->set_mdio_dir(ctrl, 0);
-
-	/* check the turnaround bit: the PHY should be driving it to zero */
-	if (mdiobb_get_bit(ctrl) != 0) {
-		/* PHY didn't drive TA low -- flush any bits it
-		 * may be trying to send.
-		 */
+	gpio_direction_input(GPIO_MDA);
+	mdiobb_get_bit();
+	
+/*
+	if (mdiobb_get_bit() != 0) {
 		for (i = 0; i < 32; i++)
-			mdiobb_get_bit(ctrl);
+			mdiobb_get_bit();
 
 		return 0xffff;
 	}
-
-	ret = mdiobb_get_num(ctrl, 16);
-	mdiobb_get_bit(ctrl);
+*/
+	ret = mdiobb_get_num(16);
+	mdiobb_get_bit();
 	return ret;
 }
 
-static int mdiobb_write(struct mii_bus *bus, int phy, int reg, u16 val)
+static int mdiobb_write(int phy, int reg, u16 val)
 {
-	struct mdiobb_ctrl *ctrl = bus->priv;
-
 	if (reg & MII_ADDR_C45) {
-		reg = mdiobb_cmd_addr(ctrl, phy, reg);
-		mdiobb_cmd(ctrl, MDIO_C45_WRITE, phy, reg);
+		reg = mdiobb_cmd_addr(phy, reg);
+		mdiobb_cmd(MDIO_C45_WRITE, phy, reg);
 	} else
-		mdiobb_cmd(ctrl, MDIO_WRITE, phy, reg);
+		mdiobb_cmd(MDIO_WRITE, phy, reg);
 
 	/* send the turnaround (10) */
-	mdiobb_send_bit(ctrl, 1);
-	mdiobb_send_bit(ctrl, 0);
+	mdiobb_send_bit(1);
+	mdiobb_send_bit(0);
 
-	mdiobb_send_num(ctrl, val, 16);
+	mdiobb_send_num(val, 16);
 
-	ctrl->ops->set_mdio_dir(ctrl, 0);
-	mdiobb_get_bit(ctrl);
+	gpio_direction_input(GPIO_MDA);	
+
+	mdiobb_get_bit();
 	return 0;
 }
-
-static int mdiobb_reset(struct mii_bus *bus)
-{
-	struct mdiobb_ctrl *ctrl = bus->priv;
-	if (ctrl->reset)
-		ctrl->reset(bus);
-	return 0;
-}
-
-struct mii_bus *alloc_mdio_bitbang(struct mdiobb_ctrl *ctrl)
-{
-	struct mii_bus *bus;
-
-	bus = mdiobus_alloc();
-	if (!bus)
-		return NULL;
-
-	__module_get(ctrl->ops->owner);
-
-	bus->read = mdiobb_read;
-	bus->write = mdiobb_write;
-	bus->reset = mdiobb_reset;
-	bus->priv = ctrl;
-
-	return bus;
-}
-EXPORT_SYMBOL(alloc_mdio_bitbang);
-
-void free_mdio_bitbang(struct mii_bus *bus)
-{
-	struct mdiobb_ctrl *ctrl = bus->priv;
-
-	module_put(ctrl->ops->owner);
-	mdiobus_free(bus);
-}
-EXPORT_SYMBOL(free_mdio_bitbang);
-
 
 /*-------------- SYSFS ---------------*/
 static struct mdio_data {
-	u8 reg;
-	u8 PHY;
+	int reg;
+	int PHY;
 };
 
 static ssize_t show_PHY(struct device *dev, struct device_attribute *attr, char *buf)
@@ -257,15 +253,15 @@ static ssize_t show_PHY(struct device *dev, struct device_attribute *attr, char 
 static ssize_t set_PHY(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct mdio_data *pdata = dev_get_drvdata(dev);
-	u8 val;
+	u16 val;
 	int error;
 	
-	error = kstrtou8(buf, 10, &val);
+	error = kstrtou16(buf, 10, &val);
 	if (error)
 		return error;
 	
 	pdata->PHY = val;
-	
+
 	return count;	
 }
 static DEVICE_ATTR(PHY, S_IWUSR | S_IRUGO, show_PHY, set_PHY);
@@ -279,15 +275,15 @@ static ssize_t show_reg(struct device *dev, struct device_attribute *attr, char 
 static ssize_t set_reg(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct mdio_data *pdata = dev_get_drvdata(dev);
-	u8 val;
+	u32 val;
 	int error;
 	
-	error = kstrtou8(buf, 10, &val);
+	error = kstrtou32(buf, 10, &val);
 	if (error)
 		return error;
 	
 	pdata->reg = val;
-	
+	pdata->reg |= MII_ADDR_C45;	
 	return count;	
 }
 static DEVICE_ATTR(reg, S_IWUSR | S_IRUGO, show_reg, set_reg);
@@ -295,11 +291,22 @@ static DEVICE_ATTR(reg, S_IWUSR | S_IRUGO, show_reg, set_reg);
 static ssize_t show_data(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct mdio_data *pdata = dev_get_drvdata(dev);
+	return sprintf(buf, "Read: %d\n", mdiobb_read(pdata->PHY, pdata->reg));
 }
 
 static ssize_t set_data(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
 {
 	struct mdio_data *pdata = dev_get_drvdata(dev);
+	u16 val;
+	int error;
+	
+	error = kstrtou16(buf, 10, &val);
+	if (error)
+		return error;
+	
+	mdiobb_write(pdata->PHY, pdata->reg, val);
+	
+	return count;
 }
 static DEVICE_ATTR(data, S_IWUSR | S_IRUGO, show_data, set_data);
 
@@ -308,6 +315,7 @@ static int __init mdio_bb_init(void)
 	struct mdio_data *pdata;
 	printk("mdio init\n");
 	
+	gpio_direction_output(GPIO_MDC, 0);
 	platform_device = platform_device_register_simple("MDIO", 0, NULL, 0);	
 	
 	device_create_file(&platform_device->dev, &dev_attr_PHY);
