@@ -23,6 +23,9 @@
 #include <linux/delay.h>
 #include <linux/platform_device.h>
 #include <linux/gpio.h>
+#include <linux/kernel.h>
+#include <linux/init.h>
+#include <linux/interrupt.h>
 
 #define MDIO_READ 2
 #define MDIO_WRITE 1
@@ -41,8 +44,8 @@
 #define GPIO4 24
 #define GPIO5 2
 #define GPIO6 3
-#define GPIO_MDA GPIO5
-#define GPIO_MDC GPIO6
+#define GPIO_MDIO GPIO1
+#define GPIO_MDC GPIO4
 
 /* Minimum MDC period is 400 ns, plus some margin for error.  MDIO_DELAY
  * is done twice per period.
@@ -52,7 +55,7 @@
 /* The PHY may take up to 300 ns to produce data, plus some margin
  * for error.
  */
-#define MDIO_READ_DELAY 300
+#define MDIO_READ_DELAY 400
 
 static struct platform_device *platform_device;
 
@@ -62,30 +65,22 @@ static void setmdc(int val)
 	gpio_set_value(GPIO_MDC, val);
 }
 
-static void setmda(int val)
+static void setmdio(int val)
 {
-	gpio_set_value(GPIO_MDA, val);
+	gpio_set_value(GPIO_MDIO, val);
 }
 
-static int getmdc(void)
-{
-	int ret;
-	ret = gpio_get_value(GPIO_MDC);
-	return ret;
-}
 
-static int getmda(void)
+static int getmdio(void)
 {
-	int ret;
-	ret = gpio_get_value(GPIO_MDA);
-	return ret;
+	return gpio_get_value(GPIO_MDIO);
 }
 
 
 /* MDIO must already be configured as output. */
 static void mdiobb_send_bit(int val)
 {
-	setmda(val);
+	setmdio(val);
 	ndelay(MDIO_DELAY);
 	setmdc(1);
 	ndelay(MDIO_DELAY);
@@ -100,7 +95,7 @@ static int mdiobb_get_bit(void)
 	ndelay(MDIO_READ_DELAY);
 	setmdc(0);
 
-	return getmda();
+	return getmdio();
 }
 
 /* MDIO must already be configured as output. */
@@ -132,8 +127,7 @@ static u16 mdiobb_get_num(int bits)
 static void mdiobb_cmd(int op, u8 PHY, u8 reg)
 {
 	int i;
-
-	gpio_direction_output(GPIO_MDA, 1);	
+	gpio_direction_output(GPIO_MDIO, 1);	
 	/*
 	 * Send a 32 bit preamble ('1's) with an extra '1' bit for good
 	 * measure.  The IEEE spec says this is a PHY optional
@@ -143,7 +137,7 @@ static void mdiobb_cmd(int op, u8 PHY, u8 reg)
 	 * much more robust.
 	 */
 
-	for (i = 0; i < 32; i++)
+	for (i = 0; i < 33; i++)
 		mdiobb_send_bit(1);
 
 	/* send the start bit (01) and the read opcode (10) or write (10).
@@ -179,11 +173,9 @@ static int mdiobb_cmd_addr(int phy, u32 addr)
 
 	mdiobb_send_num(reg, 16);
 
-//gpio_direction_input(GPIO_MDA);
+	gpio_direction_input(GPIO_MDIO);
 
-
-//mdiobb_get_bit();
-
+	mdiobb_get_bit();
 
 	return dev_addr;
 }
@@ -197,22 +189,15 @@ static int mdiobb_read(int phy, int reg)
 		mdiobb_cmd(MDIO_C45_READ, phy, reg);
 	} else
 		mdiobb_cmd(MDIO_READ, phy, reg);
-/*
-	mdiobb_send_bit(1);
-	mdiobb_send_bit(0);
-*/
 
-	gpio_direction_input(GPIO_MDA);
-	mdiobb_get_bit();
-	
-/*
+	gpio_direction_input(GPIO_MDIO);
+
 	if (mdiobb_get_bit() != 0) {
 		for (i = 0; i < 32; i++)
 			mdiobb_get_bit();
 
-		return 0xffff;
+		return 0xfff0;
 	}
-*/
 	ret = mdiobb_get_num(16);
 	mdiobb_get_bit();
 	return ret;
@@ -232,7 +217,7 @@ static int mdiobb_write(int phy, int reg, u16 val)
 
 	mdiobb_send_num(val, 16);
 
-	gpio_direction_input(GPIO_MDA);	
+	gpio_direction_input(GPIO_MDIO);	
 
 	mdiobb_get_bit();
 	return 0;
@@ -291,7 +276,7 @@ static DEVICE_ATTR(reg, S_IWUSR | S_IRUGO, show_reg, set_reg);
 static ssize_t show_data(struct device *dev, struct device_attribute *attr, char *buf)
 {
 	struct mdio_data *pdata = dev_get_drvdata(dev);
-	return sprintf(buf, "Read: %d\n", mdiobb_read(pdata->PHY, pdata->reg));
+	return sprintf(buf, "%d\n", mdiobb_read(pdata->PHY, pdata->reg));
 }
 
 static ssize_t set_data(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
@@ -310,10 +295,15 @@ static ssize_t set_data(struct device *dev, struct device_attribute *attr, const
 }
 static DEVICE_ATTR(data, S_IWUSR | S_IRUGO, show_data, set_data);
 
+/*------- Module Init/cleanup --------*/
+
 static int __init mdio_bb_init(void)
-{
+{	
 	struct mdio_data *pdata;
 	printk("mdio init\n");
+	
+	gpio_request(GPIO_MDC, "MDC-mdio");
+	gpio_request(GPIO_MDIO, "MDIO-mdio");
 	
 	gpio_direction_output(GPIO_MDC, 0);
 	platform_device = platform_device_register_simple("MDIO", 0, NULL, 0);	
@@ -335,6 +325,10 @@ module_init(mdio_bb_init);
 static void __exit mdio_bb_exit(void)
 {
 	printk("mdio exit\n");
+
+	gpio_free(GPIO_MDC);
+	gpio_free(GPIO_MDIO);
+
 	platform_device_unregister(platform_device);	
 }
 module_exit(mdio_bb_exit);
