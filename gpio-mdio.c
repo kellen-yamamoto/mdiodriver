@@ -24,10 +24,11 @@
 #define GPIO2 27
 #define GPIO3 23
 #define GPIO4 24
-#define GPIO5 2
-#define GPIO6 3
 #define GPIO_MDIO GPIO2
 #define GPIO_MDC GPIO4
+#define GPIO_RESERVED1 GPIO1
+#define GPIO_RESERVED2 GPIO3
+
 
 #define MDIO_DELAY 250
 
@@ -315,7 +316,7 @@ static ssize_t show_data(struct device *dev, struct device_attribute *attr, char
 {
     int ret;
     struct mdio_data *pdata = dev_get_drvdata(dev);
-    //printk("MDIO GPIOREQ: %d\n", gpio_request(GPIO_MDC, "REASONS"));
+    
     mutex_lock(&pdata->lock);
 
     ret = sprintf(buf, "%d\n", mdiobb_read(pdata->PHY, pdata->reg));
@@ -345,31 +346,89 @@ static ssize_t set_data(struct device *dev, struct device_attribute *attr, const
 }
 static DEVICE_ATTR(data, S_IWUSR | S_IRUGO, show_data, set_data);
 
-static ssize_t show_sem(struct device *dev, struct device_attribute *attr, char *buf)
+static const struct gpio mdio_gpios[] __initconst_or_module = {
+    {
+        .gpio   = GPIO_MDIO,
+        .flags  = GPIOF_OUT_INIT_LOW,
+        .label  = "gpio-mdio",
+    },
+    {
+        .gpio   = GPIO_MDC,
+        .flags  = GPIOF_OUT_INIT_LOW,
+        .label  = "gpio-mdc",
+    },
+    {
+        .gpio   = GPIO_RESERVED1,
+        .label  = "Reserved-mdio",
+    },
+    {
+        .gpio   = GPIO_RESERVED2,
+        .label  = "Reserved-mdio",
+    }
+};
+
+static ssize_t show_lock(struct device *dev, struct device_attribute *attr, char *buf)
 {
+    int ret;
+    struct mdio_data *pdata = dev_get_drvdata(dev);
+    
+    mutex_lock(&pdata->lock);
+
+    if (gpio_request_array(mdio_gpios, ARRAY_SIZE(mdio_gpios)))
+        ret = sprintf(buf, "%d\n", 0);
+    else ret = sprintf(buf, "%d\n", 1);
+
+    mutex_unlock(&pdata->lock);
+
+    return ret;
 }
 
-static ssize_t set_sem(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
+static ssize_t free_lock(struct device *dev, struct device_attribute *attr, const char *buf, size_t count)
 {
+    struct mdio_data *pdata = dev_get_drvdata(dev);
+
+    mutex_lock(&pdata->lock);
+
+    gpio_free_array(mdio_gpios, ARRAY_SIZE(mdio_gpios));
+
+    mutex_unlock(&pdata->lock);
+
+    return count;
 }
 
-static DEVICE_ATTR(sem, S_IWUSR | S_IRUGO, show_sem, set_sem);
-/*------- Module Init/cleanup --------*/
+static DEVICE_ATTR(lock, S_IWUSR | S_IRUGO, show_lock, free_lock);
+
+static struct attribute *gpio_attributes[] = {
+    &dev_attr_PHY.attr,
+    &dev_attr_reg.attr,
+    &dev_attr_data.attr,
+    &dev_attr_c45.attr,
+    &dev_attr_lock.attr,
+    NULL
+};
+
+static const struct attribute_group gpio_group = {
+    .attrs = gpio_attributes,
+};
+
+/*------- Module Setup/cleanup --------*/
 
 static int __init mdio_bb_init(void)
-{	
+{
+    int err;
     struct mdio_data *pdata;
     printk("gpio-mdio init\n");
 
-    gpio_direction_output(GPIO_MDC, 0);
+    //gpio_direction_output(GPIO_MDC, 0);
     platform_device = platform_device_register_simple("MDIO", 0, NULL, 0);	
 
+    /*
     device_create_file(&platform_device->dev, &dev_attr_PHY);
     device_create_file(&platform_device->dev, &dev_attr_reg);
     device_create_file(&platform_device->dev, &dev_attr_data);
     device_create_file(&platform_device->dev, &dev_attr_c45);
-    device_create_file(&platform_device->dev, &dev_attr_sem);
-
+    device_create_file(&platform_device->dev, &dev_attr_lock);
+*/
     pdata = devm_kzalloc(&platform_device->dev, sizeof(struct mdio_data), GFP_KERNEL);
     if (!pdata)
         return -ENOMEM;
@@ -377,6 +436,10 @@ static int __init mdio_bb_init(void)
     mutex_init(&pdata->lock);
 
     dev_set_drvdata(&platform_device->dev, pdata);	
+    
+    err = sysfs_create_group(&platform_device->dev.kobj, &gpio_group);
+    if (err < 0)
+        return err;
 
     return 0;
 }
