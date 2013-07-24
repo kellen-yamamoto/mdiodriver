@@ -231,8 +231,10 @@ static ssize_t set_c45(struct device *dev, struct device_attribute *attr, const 
     mutex_lock(&pdata->lock);
 
     error = kstrtou8(buf, 10, &val);
-    if (error)
+    if (error) {
+        mutex_unlock(&pdata->lock);
         return error;
+    }
 
     pdata->c45 = val;
 
@@ -265,8 +267,10 @@ static ssize_t set_PHY(struct device *dev, struct device_attribute *attr, const 
     mutex_lock(&pdata->lock);
 
     error = kstrtou16(buf, 10, &val);
-    if (error)
+    if (error) {
+        mutex_unlock(&pdata->lock);
         return error;
+    }
 
     pdata->PHY = val;
 
@@ -299,8 +303,10 @@ static ssize_t set_reg(struct device *dev, struct device_attribute *attr, const 
     mutex_lock(&pdata->lock);
 
     error = kstrtou32(buf, 10, &val);
-    if (error)
+    if (error) {
+        mutex_unlock(&pdata->lock);
         return error;
+    }
 
     pdata->reg = val;
     if (pdata->c45)
@@ -335,8 +341,10 @@ static ssize_t set_data(struct device *dev, struct device_attribute *attr, const
     mutex_lock(&pdata->lock);
 
     error = kstrtou16(buf, 10, &val);
-    if (error)
+    if (error) {
+        mutex_unlock(&pdata->lock);
         return error;
+    }
 
     mdiobb_write(pdata->PHY, pdata->reg, val);
 
@@ -419,16 +427,8 @@ static int __init mdio_bb_init(void)
     struct mdio_data *pdata;
     printk("gpio-mdio init\n");
 
-    //gpio_direction_output(GPIO_MDC, 0);
     platform_device = platform_device_register_simple("MDIO", 0, NULL, 0);	
 
-    /*
-    device_create_file(&platform_device->dev, &dev_attr_PHY);
-    device_create_file(&platform_device->dev, &dev_attr_reg);
-    device_create_file(&platform_device->dev, &dev_attr_data);
-    device_create_file(&platform_device->dev, &dev_attr_c45);
-    device_create_file(&platform_device->dev, &dev_attr_lock);
-*/
     pdata = devm_kzalloc(&platform_device->dev, sizeof(struct mdio_data), GFP_KERNEL);
     if (!pdata)
         return -ENOMEM;
