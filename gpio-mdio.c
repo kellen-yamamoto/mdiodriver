@@ -24,10 +24,12 @@
 #define GPIO2 27
 #define GPIO3 23
 #define GPIO4 24
-#define GPIO_MDIO GPIO2
-#define GPIO_MDC GPIO4
-#define GPIO_RESERVED1 GPIO1
-#define GPIO_RESERVED2 GPIO3
+#define GPIO5 2
+#define GPIO6 3
+#define GPIO_MDIO GPIO1
+#define GPIO_MDC GPIO2
+#define GPIO_RESERVED1 GPIO3
+#define GPIO_RESERVED2 GPIO4
 
 
 #define MDIO_DELAY 250
@@ -39,12 +41,18 @@ static struct platform_device *platform_device;
 /*------- GPIO Functions ------*/
 static void setmdc(int val)
 {
-    gpio_set_value(GPIO_MDC, val);
+    if (val)
+        gpio_direction_input(GPIO_MDC);
+    else
+        gpio_direction_output(GPIO_MDC, 0);
 }
 
 static void setmdio(int val)
 {
-    gpio_set_value(GPIO_MDIO, val);
+    if (val)
+        gpio_direction_input(GPIO_MDIO);
+    else
+        gpio_direction_output(GPIO_MDIO, 0);
 }
 
 
@@ -104,7 +112,7 @@ static u16 mdiobb_get_num(int bits)
 static void mdiobb_cmd(int op, u8 PHY, u8 reg)
 {
     int i;
-    gpio_direction_output(GPIO_MDIO, 1);	
+    gpio_direction_input(GPIO_MDIO);	
     /*
      * Send a 32 bit preamble ('1's) with an extra '1' bit for good
      * measure.  The IEEE spec says this is a PHY optional
@@ -114,7 +122,7 @@ static void mdiobb_cmd(int op, u8 PHY, u8 reg)
      * much more robust.
      */
 
-    for (i = 0; i < 33; i++)
+    for (i = 0; i < 32; i++)
         mdiobb_send_bit(1);
 
     /* send the start bit (01) and the read opcode (10) or write (10).
@@ -202,7 +210,7 @@ static int mdiobb_write(int phy, int reg, u16 val)
 
 /*-------------- SYSFS ---------------*/
 struct mdio_data {
-    int reg;
+    u32 reg;
     int PHY;
     u8 c45;
     struct mutex lock;
@@ -230,7 +238,7 @@ static ssize_t set_c45(struct device *dev, struct device_attribute *attr, const 
 
     mutex_lock(&pdata->lock);
 
-    error = kstrtou8(buf, 10, &val);
+    error = kstrtou8(buf, 0, &val);
     if (error) {
         mutex_unlock(&pdata->lock);
         return error;
@@ -251,7 +259,7 @@ static ssize_t show_PHY(struct device *dev, struct device_attribute *attr, char 
 
     mutex_lock(&pdata->lock);
 
-    ret = sprintf(buf, "%d\n", pdata->PHY);
+    ret = sprintf(buf, "0x%.02x\n", pdata->PHY);
 
     mutex_unlock(&pdata->lock);
 
@@ -266,7 +274,7 @@ static ssize_t set_PHY(struct device *dev, struct device_attribute *attr, const 
 
     mutex_lock(&pdata->lock);
 
-    error = kstrtou16(buf, 10, &val);
+    error = kstrtou16(buf, 0, &val);
     if (error) {
         mutex_unlock(&pdata->lock);
         return error;
@@ -287,7 +295,7 @@ static ssize_t show_reg(struct device *dev, struct device_attribute *attr, char 
 
     mutex_lock(&pdata->lock);
 
-    ret = sprintf(buf, "%d\n", pdata->reg);
+    ret = sprintf(buf, "0x%.02x\n", pdata->reg);
 
     mutex_unlock(&pdata->lock);
 
@@ -302,7 +310,7 @@ static ssize_t set_reg(struct device *dev, struct device_attribute *attr, const 
 
     mutex_lock(&pdata->lock);
 
-    error = kstrtou32(buf, 10, &val);
+    error = kstrtou32(buf, 0, &val);
     if (error) {
         mutex_unlock(&pdata->lock);
         return error;
@@ -325,7 +333,7 @@ static ssize_t show_data(struct device *dev, struct device_attribute *attr, char
     
     mutex_lock(&pdata->lock);
 
-    ret = sprintf(buf, "%d\n", mdiobb_read(pdata->PHY, pdata->reg));
+    ret = sprintf(buf, "0x%.02x\n", mdiobb_read(pdata->PHY, pdata->reg));
 
     mutex_unlock(&pdata->lock);
 
@@ -340,7 +348,7 @@ static ssize_t set_data(struct device *dev, struct device_attribute *attr, const
 
     mutex_lock(&pdata->lock);
 
-    error = kstrtou16(buf, 10, &val);
+    error = kstrtou16(buf, 0, &val);
     if (error) {
         mutex_unlock(&pdata->lock);
         return error;
@@ -357,7 +365,7 @@ static DEVICE_ATTR(data, S_IWUSR | S_IRUGO, show_data, set_data);
 static const struct gpio mdio_gpios[] __initconst_or_module = {
     {
         .gpio   = GPIO_MDIO,
-        .flags  = GPIOF_OUT_INIT_LOW,
+        .flags  = GPIOF_DIR_IN,
         .label  = "gpio-mdio",
     },
     {
