@@ -24,8 +24,6 @@
 #define GPIO2 27
 #define GPIO3 23
 #define GPIO4 24
-#define GPIO5 2
-#define GPIO6 3
 #define GPIO_MDIO GPIO1
 #define GPIO_MDC GPIO2
 #define GPIO_RESERVED1 GPIO3
@@ -165,6 +163,9 @@ static int mdiobb_cmd_addr(int phy, u32 addr)
     return dev_addr;
 }
 
+/* If there is an error during turnover, flush all bits and
+ * return 0xffff
+ */
 static int mdiobb_read(int phy, int reg)
 {
     int ret, i;
@@ -181,7 +182,7 @@ static int mdiobb_read(int phy, int reg)
         for (i = 0; i < 32; i++)
             mdiobb_get_bit();
 
-        return 0xbeef;
+        return 0xffff;
     }
     ret = mdiobb_get_num(16);
     mdiobb_get_bit();
@@ -209,6 +210,12 @@ static int mdiobb_write(int phy, int reg, u16 val)
 }
 
 /*-------------- SYSFS ---------------*/
+/* 
+ * Sysfs device attr files will accept decimal or hex values
+ * if it has a 0x prefix. 
+ */
+
+/* MDIO private data */
 struct mdio_data {
     u32 reg;
     int PHY;
@@ -216,6 +223,7 @@ struct mdio_data {
     struct mutex lock;
 };
 
+/* Sysfs file that controls whether operating using clause 45 or not */
 static ssize_t show_c45(struct device *dev, struct device_attribute *attr, char *buf)
 {
     int ret;
@@ -252,6 +260,7 @@ static ssize_t set_c45(struct device *dev, struct device_attribute *attr, const 
 }
 static DEVICE_ATTR(c45, S_IWUSR | S_IRUGO, show_c45, set_c45);
 
+/* Sysfs file for setting the device PHY address */
 static ssize_t show_PHY(struct device *dev, struct device_attribute *attr, char *buf)
 {
     int ret;
@@ -288,6 +297,12 @@ static ssize_t set_PHY(struct device *dev, struct device_attribute *attr, const 
 }
 static DEVICE_ATTR(PHY, S_IWUSR | S_IRUGO, show_PHY, set_PHY);
 
+/*
+ * Device attr file for setting register address 
+ * If using clause 45, device address will be contained
+ * in the first 16 MSBs while register address will be 
+ * the latter 16 MSBs.  
+ */
 static ssize_t show_reg(struct device *dev, struct device_attribute *attr, char *buf)
 {
     int ret;
@@ -326,6 +341,7 @@ static ssize_t set_reg(struct device *dev, struct device_attribute *attr, const 
 }
 static DEVICE_ATTR(reg, S_IWUSR | S_IRUGO, show_reg, set_reg);
 
+/* Sysfs file for performing read/write transactions */
 static ssize_t show_data(struct device *dev, struct device_attribute *attr, char *buf)
 {
     int ret;
@@ -383,6 +399,12 @@ static const struct gpio mdio_gpios[] __initconst_or_module = {
     }
 };
 
+/* Sysfs file for reserving GPIOs while performing transactions 
+ * Reading from lock will return lock status
+ *      1: free
+ *      0: busy
+ * Writing anything to lock will free it
+ */
 static ssize_t show_lock(struct device *dev, struct device_attribute *attr, char *buf)
 {
     int ret;
@@ -428,6 +450,7 @@ static const struct attribute_group gpio_group = {
 };
 
 /*------- Module Setup/cleanup --------*/
+/* Registers a platform driver and creates sysfs files */
 
 static int __init mdio_bb_init(void)
 {
